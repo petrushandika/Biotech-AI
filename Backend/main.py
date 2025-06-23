@@ -1,7 +1,5 @@
 import sys
-
 import modal
-
 from pydantic import BaseModel
 
 class VariantRequest(BaseModel):
@@ -15,18 +13,33 @@ evo2_image = (
         "nvidia/cuda:12.4.0-devel-ubuntu22.04", add_python="3.12"
     )
     .apt_install(
-        ["build-essential", "cmake", "ninja-build",
-            "libcudnn8", "libcudnn8-dev", "git", "gcc", "g++"]
+        "build-essential", "cmake", "ninja-build", "libcudnn8", "libcudnn8-dev", "git", "gcc", "g++"
     )
     .env({
         "CC": "/usr/bin/gcc",
         "CXX": "/usr/bin/g++",
     })
-    .run_commands("git clone --recurse-submodules https://github.com/ArcInstitute/evo2.git && cd evo2 && pip install .")
-    .run_commands("pip uninstall -y transformer-engine transformer_engine")
-    .run_commands("pip install 'transformer_engine[pytorch]==1.13' --no-build-isolation")
-    .pip_install_from_requirements("requirements.txt")
+    .run_commands(
+        "git clone --recurse-submodules https://github.com/ArcInstitute/evo2.git",
+        "sed -i 's/return list(np.fromstring(text, dtype=np.uint8))/return list(np.frombuffer(text.encode(), dtype=np.uint8))/' evo2/vortex/vortex/model/tokenizer.py",
+        "cd evo2 && pip install .",
+    )
+    .run_commands(
+        "pip uninstall -y transformer-engine transformer_engine",
+        "pip install 'transformer_engine[pytorch]' --no-build-isolation"
+    )
+    .pip_install(
+        "pandas",
+        "openpyxl",
+        "matplotlib",
+        "seaborn",
+        "scikit-learn",
+        "biopython",
+        "requests",
+        "fastapi[standard]"
+    )
 )
+
 
 app = modal.App("Biotech-AI", image=evo2_image)
 
@@ -217,6 +230,152 @@ def brca1_example():
         plt.axis("off")
         plt.show()
 
+
+def get_genome_sequence(position, genome: str, chromosome: str, window_size=8192):
+    import requests
+
+    half_window = window_size // 2
+    start = max(0, position - 1 - half_window)
+    end = position - 1 + half_window + 1
+
+    print(
+        f"Fetching {window_size}bp window around position {position} from UCSC API..")
+    print(f"Coordinates: {chromosome}:{start}-{end} ({genome})")
+
+    api_url = f"https://api.genome.ucsc.edu/getData/sequence?genome={genome};chrom={chromosome};start={start};end={end}"
+    response = requests.get(api_url)
+
+    if response.status_code != 200:
+        raise Exception(
+            f"Failed to fetch genome sequence from UCSC API: {response.status_code}")
+
+    genome_data = response.json()
+
+    if "dna" not in genome_data:
+        error = genome_data.get("error", "Unknown error")
+        raise Exception(f"UCSC API error: {error}")
+
+    sequence = genome_data.get("dna", "").upper()
+    expected_length = end - start
+    if len(sequence) != expected_length:
+        print(
+            f"Warning: received sequence length ({len(sequence)}) differs from expected ({expected_length})")
+
+    print(
+        f"Loaded reference genome sequence window (length: {len(sequence)} bases)")
+
+    return sequence, start
+
+
+def analyze_variant(relative_pos_in_window, reference, alternative, window_seq, model):
+    var_seq = window_seq[:relative_pos_in_window] + \
+        alternative + window_seq[relative_pos_in_window+1:]
+
+    ref_score = model.score_sequences([window_seq])[0]
+    var_score = model.score_sequences([var_seq])[0]
+
+    delta_score = var_score - ref_score
+
+    threshold = -0.0009178519
+    lof_std = 0.0015140239
+    func_std = 0.0009016589
+
+    if delta_score < threshold:
+        prediction = "Likely pathogenic"
+        confidence = min(1.0, abs(delta_score - threshold) / lof_std)
+    else:
+        prediction = "Likely benign"
+        confidence = min(1.0, abs(delta_score - threshold) / func_std)
+
+    return {
+        "reference": reference,
+        "alternative": alternative,
+        "delta_score": float(delta_score),
+        "prediction": prediction,
+        "classification_confidence": float(confidence)
+    }
+
+
+@app.cls(gpu="H100", volumes={mount_path: volume}, max_containers=3, retries=2, scaledown_window=120)
+class Evo2Model:
+    @modal.enter()
+    def load_evo2_model(self):
+        from evo2 import Evo2
+        print("Loading evo2 model...")
+        self.model = Evo2('evo2_7b')
+        print("Evo2 model loaded")
+
+    # @modal.method()
+    @modal.fastapi_endpoint(method="POST")
+    def analyze_single_variant(self, request: VariantRequest):
+        variant_position = request.variant_position
+        alternative = request.alternative
+        genome = request.genome
+        chromosome = request.chromosome
+
+        print("Genome:", genome)
+        print("Chromosome:", chromosome)
+        print("Variant position:", variant_position)
+        print("Variant alternative:", alternative)
+
+        WINDOW_SIZE = 8192
+
+        window_seq, seq_start = get_genome_sequence(
+            position=variant_position,
+            genome=genome,
+            chromosome=chromosome,
+            window_size=WINDOW_SIZE
+        )
+
+        print(f"Fetched genome seauence window, first 100: {window_seq[:100]}")
+
+        relative_pos = variant_position - 1 - seq_start
+        print(f"Relative position within window: {relative_pos}")
+
+        if relative_pos < 0 or relative_pos >= len(window_seq):
+            raise ValueError(
+                f"Variant position {variant_position} is outside the fetched window (start={seq_start+1}, end={seq_start+len(window_seq)})")
+
+        reference = window_seq[relative_pos]
+        print("Reference is: " + reference)
+
+        # Analyze the variant
+        result = analyze_variant(
+            relative_pos_in_window=relative_pos,
+            reference=reference,
+            alternative=alternative,
+            window_seq=window_seq,
+            model=self.model
+        )
+
+        result["position"] = variant_position
+
+        return result
+
+
 @app.local_entrypoint()
 def main():
-    brca1_example.local()
+    # Example of how you'd call the deployed Modal Function from your client
+    import requests
+    import json    # brca1_example.remote()
+
+    evo2Model = Evo2Model()
+
+    print("This will run the main function locally and call the remote Modal function.")
+    print("It might take a while to build the image for the first time.")
+
+    payload = {
+        "variant_position": 43119628,
+        "alternative": "G",
+        "genome": "hg38",
+        "chromosome": "chr17"
+    }
+    
+    try:
+        result = evo2Model.analyze_single_variant.remote(VariantRequest(**payload))
+        print("\n--- Analysis Result ---")
+        print(json.dumps(result, indent=2))
+        print("-----------------------\n")
+    except Exception as e:
+        print(f"\nAn error occurred while calling the remote function: {e}")
+        print("Please check the Modal app logs for more details.")
