@@ -167,7 +167,7 @@ export function VariantComparisonModal({
                         <div className="text-xs text-[#3c4f3d]/60">
                           {comparisonVariant.evo2Result.delta_score < 0
                             ? "Negative score indicates loss of function"
-                            : "Positive score indicated gain/neutral function"}
+                            : "Positive score indicates gain/neutral function"}
                         </div>
                       </div>
                       {/* Confidence bar */}

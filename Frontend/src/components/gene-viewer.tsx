@@ -126,7 +126,7 @@ export default function GeneViewer({
           await fetchGeneSequence(fetchedRange.start, fetchedRange.end);
         }
       } catch {
-        setError("Faield to load gene information. Please try again.");
+        setError("Failed to load gene information. Please try again.");
       } finally {
         setIsLoading(false);
       }
