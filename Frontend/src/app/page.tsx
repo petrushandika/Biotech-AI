@@ -1,6 +1,6 @@
 "use client";
 
-import { Clapperboard, Search, SearchCodeIcon } from "lucide-react";
+import { Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import GeneViewer from "~/components/gene-viewer";
 import { Button } from "~/components/ui/button";
@@ -93,7 +93,7 @@ export default function HomePage() {
 
       setSearchResults(results);
     } catch (err) {
-      setError("Faield to search genes");
+      setError("Failed to search genes");
     } finally {
       setIsLoading(false);
     }

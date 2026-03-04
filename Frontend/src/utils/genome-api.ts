@@ -1,4 +1,3 @@
-import { Viaoda_Libre } from "next/font/google";
 import { env } from "~/env";
 
 export interface GenomeAssemblyFromSearch {

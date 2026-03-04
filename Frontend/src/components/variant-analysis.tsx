@@ -21,7 +21,6 @@ import {
   getNucleotideColorClass,
 } from "~/utils/coloring-utils";
 import { Button } from "./ui/button";
-import { match } from "node:assert";
 import { Zap } from "lucide-react";
 
 export interface VariantAnalysisHandle {

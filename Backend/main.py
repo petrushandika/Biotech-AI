@@ -327,7 +327,7 @@ class Evo2Model:
             window_size=WINDOW_SIZE
         )
 
-        print(f"Fetched genome seauence window, first 100: {window_seq[:100]}")
+        print(f"Fetched genome sequence window, first 100: {window_seq[:100]}")
 
         relative_pos = variant_position - 1 - seq_start
         print(f"Relative position within window: {relative_pos}")
